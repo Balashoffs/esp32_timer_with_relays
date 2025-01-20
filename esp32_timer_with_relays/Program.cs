@@ -21,10 +21,13 @@ namespace esp32_timer_with_relays
             TimerController t = new TimerController(new int[] { 4, 5 });
             TimerProvider timerProvider = new TimerProvider();
             TimerWorkLed ledProvider = new TimerWorkLed(25);
-            CustomGpio readyLed = new CustomGpio(27);
+            CustomGpio readyLed = new CustomGpio(26);
+            CustomGpio relayPin = new CustomGpio(16);
             timerProvider.stopTimerEventhadler += (sender, args) =>
             {
-                ledProvider.changeLedState(((TimerEventArgs)args).isStop);
+                bool timerFlag = ((TimerEventArgs)args).isStop;
+                ledProvider.changeLedState(timerFlag);
+                relayPin.writePin(!timerFlag);
 
             };
             t.onPressButoneventHandler += (sender, args) =>
@@ -34,25 +37,27 @@ namespace esp32_timer_with_relays
                 switch (btn.type)
                 {
                     case ButtonType.min120:
-                        timerProvider.startCount(16000);
+                        timerProvider.startCount(240);
                         break;
                     case ButtonType.min90:
-                        timerProvider.startCount(8000);
+                        timerProvider.startCount(180);
                         break;
                     case ButtonType.min60:
-                        timerProvider.startCount(4000);
+                        timerProvider.startCount(120);
                         Debug.WriteLine("min60: start");
                         break;
                     case ButtonType.min30:
-                        timerProvider.startCount(2000);
+                        timerProvider.startCount(60);
                         break;
                     default:
                         timerProvider.ResetTimer();
                         break;
                 }
             };
+            
             t.startScanButtons();
             readyLed.writePin(PinValue.Low);
+            relayPin.writePin(PinValue.Low);
             Thread.Sleep(Timeout.Infinite);
         }
     }
@@ -136,7 +141,7 @@ namespace esp32_timer_with_relays
         public void startCount(int delay)
         {
             Debug.WriteLine("Start timer for " + delay.ToString() + " mills");
-            timer.Change(delay, Timeout.Infinite);
+            timer.Change(TimeSpan.FromMinutes(delay), TimeSpan.FromMilliseconds(-1));
             stopTimerEventhadler?.Invoke(this, new TimerEventArgs(false));
             Debug.WriteLine(DateTime.UtcNow.ToUnixTimeSeconds().ToString() + ": start");
         }
