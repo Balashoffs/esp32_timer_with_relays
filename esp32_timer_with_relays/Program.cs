@@ -53,16 +53,14 @@ namespace esp32_timer_with_relays
             GpioController gpioController = new GpioController();
             AdcController adcController = new AdcController();
 
-            AnalogValueController t = new AnalogValueController(new[] { 4, 5 }, adcController);
-            // HeatService heatService = new HeatService(TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(5));
-            HeatService heatService = new HeatService(TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(5));
-
             CustomOutputGpio heatingLed = new CustomOutputGpio(gpioController, 26);
             CustomOutputGpio jobyLed = new CustomOutputGpio(gpioController, 25);
             CustomOutputGpio relayPin = new CustomOutputGpio(gpioController, 16);
+            AnalogValueController t = new AnalogValueController(new[] { 4, 5 }, adcController);
+             HeatService heatService = new HeatService(TimeSpan.FromMinutes(4), TimeSpan.FromMinutes(1));
+            //HeatService heatService = new HeatService(TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(5));
             LedInformationService ledInformationService = new LedInformationService(jobyLed, heatingLed);
             
-
             heatService.HeatingActionEventHandler += (sender, args) =>
             {
                 HeatingStatus status = ((HeatingActionEventArgs)args).Status;
@@ -89,16 +87,16 @@ namespace esp32_timer_with_relays
                 switch (type)
                 {
                     case ButtonType.Hours8:
-                        timeSpan = TimeSpan.FromSeconds(480);
+                        timeSpan = TimeSpan.FromMinutes(480);
                         break;
                     case ButtonType.Hours6:
-                        timeSpan = TimeSpan.FromSeconds(360);
+                        timeSpan = TimeSpan.FromMinutes(360);
                         break;
                     case ButtonType.Hours4:
-                        timeSpan = TimeSpan.FromSeconds(240);
+                        timeSpan = TimeSpan.FromMinutes(240);
                         break;
                     case ButtonType.Hours2:
-                        timeSpan = TimeSpan.FromSeconds(120);
+                        timeSpan = TimeSpan.FromMinutes(120);
                         break;
                     default:
                         timeSpan = TimeSpan.Zero;
@@ -109,7 +107,7 @@ namespace esp32_timer_with_relays
             };
 
             t.SetTimer();
-            jobyLed.WritePin(PinValue.Low);
+            // jobyLed.WritePin(PinValue.Low);
             relayPin.WritePin(PinValue.Low);
             Thread.Sleep(Timeout.Infinite);
         }
@@ -220,7 +218,6 @@ namespace esp32_timer_with_relays
         public CustomOutputGpio(GpioController gpioController, int pin)
         {
             _gpio = gpioController.OpenPin(pin, PinMode.Output);
-            WritePin(PinValue.High);
         }
 
         public void WritePin(PinValue pinValue)
