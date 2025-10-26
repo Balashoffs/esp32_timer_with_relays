@@ -1,8 +1,8 @@
 using System;
 using System.Device.Adc;
 using System.Device.Gpio;
-using System.Diagnostics;
 using System.Threading;
+using nanoFramework.Hardware.Esp32;
 
 namespace esp32_timer_with_relays
 {
@@ -43,6 +43,10 @@ namespace esp32_timer_with_relays
     button program 2 - 6 minutes (ch 4, max 2700, min 2600)
     button program 3 - 4 minutes (ch 4, max 3350, min 3250)
     button program 4 - 2 minutes (ch 5, max 2000, min 1900)
+
+    nanoff --listports
+    nanoff --platform ESP32 --serialport [COM_PORT] --devicedetails
+    nanoff --update --target ESP32_REV3 --serialport [COM_PORT] --masserase true --reset
      */
 
 
@@ -52,18 +56,20 @@ namespace esp32_timer_with_relays
         {
             GpioController gpioController = new GpioController();
             AdcController adcController = new AdcController();
-
+            
             CustomOutputGpio heatingLed = new CustomOutputGpio(gpioController, 26);
             CustomOutputGpio jobyLed = new CustomOutputGpio(gpioController, 25);
             CustomOutputGpio relayPin = new CustomOutputGpio(gpioController, 16);
-            AnalogValueController t = new AnalogValueController(new[] { 4, 5 }, adcController);
-             HeatService heatService = new HeatService(TimeSpan.FromMinutes(4), TimeSpan.FromMinutes(1));
-            //HeatService heatService = new HeatService(TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(5));
-            LedInformationService ledInformationService = new LedInformationService(jobyLed, heatingLed);
             
-            heatService.HeatingActionEventHandler += (sender, args) =>
+            AdcService adcService = new AdcService(new[] { 4, 5 }, adcController);
+            TimingService timingService = new TimingService(ITiming.BuildOn(DevelopStage.Develop));
+            HeatService heatService = new HeatService(timingService.HeatingUs, timingService.CoolingUs);
+            LedInformationService ledInformationService = new LedInformationService(jobyLed, heatingLed);
+
+            heatService.HeatingActionEventHandler += (_, args) =>
             {
                 HeatingStatus status = ((HeatingActionEventArgs)args).Status;
+                Console.WriteLine("Status: " + status.ToString());
                 if (status == HeatingStatus.Heating)
                 {
                     relayPin.WritePin(1);
@@ -80,37 +86,101 @@ namespace esp32_timer_with_relays
                     ledInformationService.TurnOnDefault();
                 }
             };
-            t.OnPressButonEventHandler += (sender, args) =>
+            adcService.OnPressButonEventHandler += (_, args) =>
             {
                 ButtonType type = ((PressButtonEventArgs)args).BtnType;
-                TimeSpan timeSpan;
+                ulong delay;
                 switch (type)
                 {
-                    case ButtonType.Hours8:
-                        timeSpan = TimeSpan.FromMinutes(480);
+                    case ButtonType.Program1:
+                        delay = timingService.Program1Us;
                         break;
-                    case ButtonType.Hours6:
-                        timeSpan = TimeSpan.FromMinutes(360);
+                    case ButtonType.Program2:
+                        delay = timingService.Program2Us;
                         break;
-                    case ButtonType.Hours4:
-                        timeSpan = TimeSpan.FromMinutes(240);
+                    case ButtonType.Program3:
+                        delay = timingService.Program3Us;
                         break;
-                    case ButtonType.Hours2:
-                        timeSpan = TimeSpan.FromMinutes(120);
+                    case ButtonType.Program4:
+                        delay = timingService.Program4Us;
+                        break;
+                    case ButtonType.Reset:
+                        delay = 0;
                         break;
                     default:
-                        timeSpan = TimeSpan.Zero;
-                        break;
+                        throw new ArgumentOutOfRangeException();
                 }
-
-                heatService.ExecuteHeating(timeSpan);
+                heatService.ExecuteHeating(delay);
             };
 
-            t.SetTimer();
+            adcService.SetTimer();
             // jobyLed.WritePin(PinValue.Low);
             relayPin.WritePin(PinValue.Low);
             Thread.Sleep(Timeout.Infinite);
         }
+    }
+
+    public class TimingService
+    {
+        private ITiming _timing;
+
+        public TimingService(ITiming timing)
+        {
+            _timing = timing;
+        }
+
+        public ulong HeatingUs => _convertTsToUs(_timing.HeatingTs);
+        public ulong CoolingUs => _convertTsToUs(_timing.CoolingTs);
+        public ulong Program1Us => _convertTsToUs(_timing.Program1Ts);
+        public ulong Program2Us => _convertTsToUs(_timing.Program2Ts);
+        public ulong Program3Us => _convertTsToUs(_timing.Program3Ts);
+        public ulong Program4Us => _convertTsToUs(_timing.Program4Ts);
+
+        ulong _convertTsToUs(TimeSpan ts) => (ulong)ts.Ticks / 10;
+        
+    }
+
+    public interface ITiming
+    {
+        static ITiming BuildOn(DevelopStage stage)
+        {
+            switch (stage)
+            {
+                case DevelopStage.Develop:
+                    return new DevTiming();
+                case DevelopStage.Production:
+                    return new ProdTiming();
+                default:
+                    throw new Exception();
+            }
+        }
+        
+        public TimeSpan HeatingTs { get; }
+        public TimeSpan CoolingTs { get; }
+        public TimeSpan Program1Ts { get; }
+        public TimeSpan Program2Ts { get; }
+        public TimeSpan Program3Ts { get; }
+        public TimeSpan Program4Ts { get; }
+    }
+
+    public class DevTiming : ITiming
+    {
+        public TimeSpan HeatingTs => TimeSpan.FromSeconds(4);
+        public TimeSpan CoolingTs => TimeSpan.FromSeconds(1);
+        public TimeSpan Program1Ts => TimeSpan.FromSeconds(30);
+        public TimeSpan Program2Ts => TimeSpan.FromSeconds(60);
+        public TimeSpan Program3Ts => TimeSpan.FromSeconds(90);
+        public TimeSpan Program4Ts => TimeSpan.FromSeconds(120);
+    }
+
+    public class ProdTiming : ITiming
+    {
+        public TimeSpan HeatingTs => TimeSpan.FromMinutes(4);
+        public TimeSpan CoolingTs => TimeSpan.FromMinutes(1);
+        public TimeSpan Program1Ts => TimeSpan.FromHours(8);
+        public TimeSpan Program2Ts => TimeSpan.FromHours(6);
+        public TimeSpan Program3Ts => TimeSpan.FromHours(4);
+        public TimeSpan Program4Ts => TimeSpan.FromHours(2);
     }
 
     class LedInformationService
@@ -144,16 +214,20 @@ namespace esp32_timer_with_relays
 
     public abstract class LedController
     {
-        protected readonly Timer LedTimer;
+        protected readonly HighResTimer LedTimer;
         protected readonly CustomOutputGpio Gpio;
 
         protected LedController(CustomOutputGpio gpio)
         {
             Gpio = gpio;
-            LedTimer = new Timer(TimerCallback, null, -1, -1);
+            LedTimer = new HighResTimer();
+            LedTimer.OnHighResTimerExpired += (_, _) =>
+            {
+                Gpio.WritePin(PinValue.Low);
+                Thread.Sleep(125);
+                Gpio.WritePin(PinValue.High);
+            };
         }
-
-        protected abstract void TimerCallback(object state);
     }
 
     public class HeatingLedController : LedController
@@ -165,21 +239,14 @@ namespace esp32_timer_with_relays
 
         public void TurnOn()
         {
-            LedTimer.Change(0, 500);
+            ulong us = (ulong)(TimeSpan.FromMilliseconds(500).Ticks / 10);
+            LedTimer.StartOnePeriodic(us);
             Gpio.WritePin(PinValue.High);
         }
 
         public void TurnOff()
         {
-            
-            LedTimer.Change(-1, -1);
-            Gpio.WritePin(PinValue.High);
-        }
-
-        protected override void TimerCallback(object state)
-        {
-            Gpio.WritePin(PinValue.Low);
-            Thread.Sleep(125);
+            LedTimer.Stop();
             Gpio.WritePin(PinValue.High);
         }
     }
@@ -193,19 +260,14 @@ namespace esp32_timer_with_relays
 
         public void Waiting()
         {
-            LedTimer.Change(-1, -1);
+            LedTimer.Stop();
             Gpio.WritePin(PinValue.Low);
         }
 
         public void Running()
         {
-            LedTimer.Change(0, 500);
-        }
-
-        protected override void TimerCallback(object state)
-        {
-            Gpio.WritePin(PinValue.Low);
-            Thread.Sleep(125);
+            ulong us = (ulong)(TimeSpan.FromMilliseconds(500).Ticks / 10);
+            LedTimer.StartOnePeriodic(us);
             Gpio.WritePin(PinValue.High);
         }
     }
@@ -228,63 +290,69 @@ namespace esp32_timer_with_relays
 
     public class HeatService
     {
-        private readonly Timer _heatingTimer;
-        private readonly Timer _coolingTimer;
-        private readonly Timer _jobTimer;
-        private readonly TimeSpan _heatingTs;
-        private readonly TimeSpan _coolingTs;
+        private readonly HighResTimer _heatingTimer;
+        private readonly HighResTimer _coolingTimer;
+        private readonly HighResTimer _jobTimer;
+        private readonly ulong _heatingUs;
+        private readonly ulong _coolingUs;
 
         public EventHandler HeatingActionEventHandler;
 
-        public HeatService(TimeSpan heatingTs, TimeSpan coolingTs)
+        public HeatService(ulong heatingUs, ulong coolingUs)
         {
-            _coolingTs = coolingTs;
-            _heatingTs = heatingTs;
-            _heatingTimer = new Timer(_OnHeating, null, -1, -1);
-            _coolingTimer = new Timer(_OnCooling, null, -1, -1);
-            _jobTimer = new Timer(_OnStop, null, -1, -1);
+            _coolingUs = coolingUs;
+            _heatingUs = heatingUs;
+            _heatingTimer = new HighResTimer();
+            _coolingTimer = new HighResTimer();
+            _jobTimer = new HighResTimer();
+
+            _heatingTimer.OnHighResTimerExpired += _OnHeating;
+            _coolingTimer.OnHighResTimerExpired += _OnCooling;
+            _jobTimer.OnHighResTimerExpired += _OnStop;
         }
 
-        public void ExecuteHeating(TimeSpan delay)
+        public void ExecuteHeating(ulong delay)
         {
-            if (delay == TimeSpan.Zero)
+            Console.WriteLine("ExecuteHeating:" + delay.ToString());
+            if (delay == 0)
             {
                 _reset();
             }
             else
             {
-                _jobTimer.Change(delay, TimeSpan.FromMilliseconds(-1));
-                _heatingTimer.Change(_heatingTs, TimeSpan.FromMilliseconds(-1));
+                _jobTimer.StartOnePeriodic(delay);
+                _heatingTimer.StartOnePeriodic(_heatingUs);
                 HeatingActionEventHandler?.Invoke(this, new HeatingActionEventArgs(HeatingStatus.Heating));
             }
         }
 
-        private void _OnHeating(object state)
+        private void _OnHeating(HighResTimer sender, object e)
         {
-            _heatingTimer.Change(-1, -1);
-            _coolingTimer.Change(_coolingTs, TimeSpan.FromMilliseconds(-1));
+            _heatingTimer.Stop();
+            _coolingTimer.StartOnePeriodic(_coolingUs);
             HeatingActionEventHandler?.Invoke(this, new HeatingActionEventArgs(HeatingStatus.Cooling));
         }
 
-        private void _OnCooling(object state)
+        private void _OnCooling(HighResTimer sender, object e)
         {
-            _coolingTimer.Change(-1, -1);
-            _heatingTimer.Change(_heatingTs, TimeSpan.FromMilliseconds(-1));
+            _coolingTimer.Stop();
+            _heatingTimer.StartOnePeriodic(_heatingUs);
             HeatingActionEventHandler?.Invoke(this, new HeatingActionEventArgs(HeatingStatus.Heating));
         }
 
-        private void _OnStop(object state)
+        private void _OnStop(HighResTimer sender, object e)
         {
+            Console.WriteLine("On stop");
             _reset();
         }
 
 
         private void _reset()
         {
-            
-            _coolingTimer.Change(-1, -1);
-            _heatingTimer.Change(-1, -1);
-            _jobTimer.Change(-1, -1);
+            Console.WriteLine("On reset");
+            _coolingTimer.Stop();
+            _heatingTimer.Stop();
+            _jobTimer.Stop();
             HeatingActionEventHandler?.Invoke(this, new HeatingActionEventArgs(HeatingStatus.Stop));
         }
 
@@ -317,14 +385,14 @@ namespace esp32_timer_with_relays
         }
     }
 
-    public class AnalogValueController
+    public class AdcService
     {
         private readonly AnalogButton[][] _buttonsSet;
         private readonly AnalogReader[] _adcSets;
         private Timer _timer;
         public EventHandler OnPressButonEventHandler;
 
-        public AnalogValueController(int[] channels, AdcController controller)
+        public AdcService(int[] channels, AdcController controller)
         {
             _adcSets = new AnalogReader[channels!.Length];
             _buttonsSet = new AnalogButton[channels.Length][];
@@ -384,15 +452,15 @@ namespace esp32_timer_with_relays
 
         private AnalogButton[] InitFirstButtonSet()
         {
-            AnalogButton hours8Btn = new AnalogButton(ButtonType.Hours8, 1800, 2100);
-            AnalogButton hours6Btn = new AnalogButton(ButtonType.Hours6, 2500, 2800);
-            AnalogButton hours4Btn = new AnalogButton(ButtonType.Hours4, 3150, 3450);
+            AnalogButton hours8Btn = new AnalogButton(ButtonType.Program1, 1800, 2100);
+            AnalogButton hours6Btn = new AnalogButton(ButtonType.Program2, 2500, 2800);
+            AnalogButton hours4Btn = new AnalogButton(ButtonType.Program3, 3150, 3450);
             return new[] { hours8Btn, hours6Btn, hours4Btn, };
         }
 
         private AnalogButton[] InitSecondButtonSet()
         {
-            AnalogButton hours2Btn = new AnalogButton(ButtonType.Hours2, 1800, 2100);
+            AnalogButton hours2Btn = new AnalogButton(ButtonType.Program4, 1800, 2100);
             AnalogButton resetBtn = new AnalogButton(ButtonType.Reset, 2500, 2800);
             return new[] { hours2Btn, resetBtn };
         }
@@ -432,17 +500,17 @@ namespace esp32_timer_with_relays
 
     public enum ButtonType
     {
-        Hours8,
-        Hours6,
-        Hours4,
-        Hours2,
+        Program1,
+        Program2,
+        Program3,
+        Program4,
         Reset,
     }
 
-    public enum JobStatus
+    public enum DevelopStage
     {
-        Waiting,
-        Running,
+        Develop,
+        Production,
     }
 
     public enum HeatingStatus
