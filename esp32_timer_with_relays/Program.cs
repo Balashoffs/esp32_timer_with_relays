@@ -56,12 +56,12 @@ namespace esp32_timer_with_relays
         {
             GpioController gpioController = new GpioController();
             AdcController adcController = new AdcController();
-            
+
             CustomOutputGpio heatingLed = new CustomOutputGpio(gpioController, 26);
             CustomOutputGpio jobyLed = new CustomOutputGpio(gpioController, 25);
             CustomOutputGpio relayPin = new CustomOutputGpio(gpioController, 16);
-            
-            AdcService adcService = new AdcService(new[] { 4, 5 }, adcController);
+
+
             TimingService timingService = new TimingService(ITiming.BuildOn(DevelopStage.Develop));
             HeatService heatService = new HeatService(timingService.HeatingUs, timingService.CoolingUs);
             LedInformationService ledInformationService = new LedInformationService(jobyLed, heatingLed);
@@ -86,9 +86,10 @@ namespace esp32_timer_with_relays
                     ledInformationService.TurnOnDefault();
                 }
             };
+            AdcService adcService = new AdcService(new[] { 4, 5 }, adcController);
             adcService.OnPressButonEventHandler += (_, args) =>
             {
-                ButtonType type = ((PressButtonEventArgs)args).BtnType;
+                ButtonType type = ((AnalogButtonEventArgs)args).BtnType;
                 ulong delay;
                 switch (type)
                 {
@@ -110,11 +111,10 @@ namespace esp32_timer_with_relays
                     default:
                         throw new ArgumentOutOfRangeException();
                 }
+
                 heatService.ExecuteHeating(delay);
             };
-
-            adcService.SetTimer();
-            // jobyLed.WritePin(PinValue.Low);
+            adcService.StartScan();
             relayPin.WritePin(PinValue.Low);
             Thread.Sleep(Timeout.Infinite);
         }
@@ -137,7 +137,6 @@ namespace esp32_timer_with_relays
         public ulong Program4Us => _convertTsToUs(_timing.Program4Ts);
 
         ulong _convertTsToUs(TimeSpan ts) => (ulong)ts.Ticks / 10;
-        
     }
 
     public interface ITiming
@@ -154,7 +153,7 @@ namespace esp32_timer_with_relays
                     throw new Exception();
             }
         }
-        
+
         public TimeSpan HeatingTs { get; }
         public TimeSpan CoolingTs { get; }
         public TimeSpan Program1Ts { get; }
@@ -375,11 +374,11 @@ namespace esp32_timer_with_relays
     }
 
 
-    public class PressButtonEventArgs : EventArgs
+    public class AnalogButtonEventArgs : EventArgs
     {
         public readonly ButtonType BtnType;
 
-        public PressButtonEventArgs(ButtonType type)
+        public AnalogButtonEventArgs(ButtonType type)
         {
             BtnType = type;
         }
@@ -412,22 +411,18 @@ namespace esp32_timer_with_relays
             }
         }
 
-        public void SetTimer(int dueTime = 0, int period = 200)
+        public void StartScan()
         {
-            _timer = new Timer(ScanButtons, null, dueTime, period);
+            _timer = new Timer(_OnScanButtons, null, 0, 250);
         }
 
-        public void Dispose()
-        {
-            _timer.Dispose();
-        }
 
-        private void ScanButtons(object state)
+        private void _OnScanButtons(object e)
         {
             AnalogButton btn = GetPressedButton();
             if (btn != null && OnPressButonEventHandler != null)
             {
-                OnPressButonEventHandler.Invoke(this, new PressButtonEventArgs(btn.Type));
+                OnPressButonEventHandler.Invoke(this, new AnalogButtonEventArgs(btn.Type));
             }
         }
 
@@ -518,5 +513,10 @@ namespace esp32_timer_with_relays
         Heating,
         Cooling,
         Stop,
+    }
+
+    public static class Utils
+    {
+        public static ulong ConvertFromTsToUs(TimeSpan timeSpan) => (ulong)timeSpan.Ticks / 10;
     }
 }
