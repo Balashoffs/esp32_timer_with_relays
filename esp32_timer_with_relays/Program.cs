@@ -62,10 +62,10 @@ namespace esp32_timer_with_relays
             CustomOutputGpio relayPin = new CustomOutputGpio(gpioController, 16);
 
 
-            TimingService timingService = new TimingService(ITiming.BuildOn(DevelopStage.Develop));
+            TimingService timingService = new TimingService(ITiming.BuildOn(DevelopStage.Production));
             HeatService heatService = new HeatService(timingService.HeatingUs, timingService.CoolingUs);
             LedInformationService ledInformationService = new LedInformationService(jobyLed, heatingLed);
-
+            ulong lastDelayValue = 0;
             heatService.HeatingActionEventHandler += (_, args) =>
             {
                 HeatingStatus status = ((HeatingActionEventArgs)args).Status;
@@ -82,6 +82,7 @@ namespace esp32_timer_with_relays
                 }
                 else
                 {
+                    lastDelayValue = 0;
                     relayPin.WritePin(0);
                     ledInformationService.TurnOnDefault();
                 }
@@ -112,17 +113,33 @@ namespace esp32_timer_with_relays
                         throw new ArgumentOutOfRangeException();
                 }
 
-                heatService.ExecuteHeating(delay);
+   
+                if (delay != lastDelayValue)
+                {
+                    heatService.ExecuteHeating(delay);
+                }
+
+                lastDelayValue = delay;
             };
             adcService.StartScan();
             relayPin.WritePin(PinValue.Low);
+            jobyLed.WritePin(PinValue.Low);
             Thread.Sleep(Timeout.Infinite);
         }
     }
 
-    public class TimingService
+    public interface ITimingService
     {
-        private ITiming _timing;
+        public ulong HeatingUs { get; }
+        public ulong CoolingUs { get; }
+        public ulong Program1Us{ get; }
+        public ulong Program2Us{ get; }
+        public ulong Program3Us{ get; }
+        public ulong Program4Us{ get; }
+    }
+    public class TimingService : ITimingService
+    {
+        private readonly ITiming _timing;
 
         public TimingService(ITiming timing)
         {
@@ -238,14 +255,14 @@ namespace esp32_timer_with_relays
 
         public void TurnOn()
         {
-            ulong us = (ulong)(TimeSpan.FromMilliseconds(500).Ticks / 10);
+            ulong us = Utils.ConvertFromTsToUs(TimeSpan.FromMilliseconds(500));
             LedTimer.StartOnePeriodic(us);
-            Gpio.WritePin(PinValue.High);
         }
 
         public void TurnOff()
         {
             LedTimer.Stop();
+            Thread.Sleep(500);
             Gpio.WritePin(PinValue.High);
         }
     }
@@ -254,20 +271,20 @@ namespace esp32_timer_with_relays
     {
         public JobLedController(CustomOutputGpio gpio) : base(gpio)
         {
-            Gpio.WritePin(PinValue.Low);
+            
         }
 
         public void Waiting()
         {
             LedTimer.Stop();
+            Thread.Sleep(500);
             Gpio.WritePin(PinValue.Low);
         }
 
         public void Running()
         {
-            ulong us = (ulong)(TimeSpan.FromMilliseconds(500).Ticks / 10);
+            ulong us = Utils.ConvertFromTsToUs(TimeSpan.FromMilliseconds(500));
             LedTimer.StartOnePeriodic(us);
-            Gpio.WritePin(PinValue.High);
         }
     }
 
@@ -295,6 +312,7 @@ namespace esp32_timer_with_relays
         private readonly ulong _heatingUs;
         private readonly ulong _coolingUs;
 
+
         public EventHandler HeatingActionEventHandler;
 
         public HeatService(ulong heatingUs, ulong coolingUs)
@@ -312,10 +330,9 @@ namespace esp32_timer_with_relays
 
         public void ExecuteHeating(ulong delay)
         {
-            Console.WriteLine("ExecuteHeating:" + delay.ToString());
             if (delay == 0)
             {
-                _reset();
+                Reset();
             }
             else
             {
@@ -341,12 +358,11 @@ namespace esp32_timer_with_relays
 
         private void _OnStop(HighResTimer sender, object e)
         {
-            Console.WriteLine("On stop");
-            _reset();
+            Reset();
         }
 
 
-        private void _reset()
+        public void Reset()
         {
             Console.WriteLine("On reset");
             _coolingTimer.Stop();
