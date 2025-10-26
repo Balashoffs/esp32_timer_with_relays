@@ -7,300 +7,451 @@ using System.Threading;
 namespace esp32_timer_with_relays
 {
     /*
-     * „етыре временных интервалов
-     *  - 2 часа (ch 4, max 2000, min 1900)
-     *  - 1.5 часа (ch 4, max 2700, min 2600)
-     *  - 1 час (ch 4, max 3350, min 3250)
-     *  - 0.5 часа (ch 5, max 2000, min 1900)
-     *   нопка сброса (ch 5, max 2700, min 2600)
+      GPIO and ADC configuration for ESP32
+       1. Gpios as output:
+        - Green ready led - GPIO 25
+        - Red job led - GPIO 26
+        - Relay control pin - GPIO 16
+       2 . ADC channels for buttons:
+        - Channel 4
+        - Channel 5
+       3. Buttons and ADC Values:
+        button program 1 - (ch 4, max 2000, min 1900)
+        button program 2 - (ch 4, max 2700, min 2600)
+        button program 3 - (ch 4, max 3350, min 3250)
+        button program 4 - (ch 5, max 2000, min 1900)
+        button reset- (ch 5, max 2700, min 2600)
+
+    Led Info logic:
+    Heating 1, 2, 4, 6 or 8 hours;
+    Green led (GL) - user selected program type:
+    - GL is turned on - device are waiting for user selecting
+    - GL is blinked - user selected program
+
+    Red led (RL) - internal relay status
+    - RL is blinked - relay is turned on
+    - RL is turned off - relay is turned off
+
+    -------- For production use: --------
+    button program 1 - 8 hours (ch 4, max 2000, min 1900)
+    button program 2 - 6 hours (ch 4, max 2700, min 2600)
+    button program 3 - 4 hours (ch 4, max 3350, min 3250)
+    button program 4 - 2 hours (ch 5, max 2000, min 1900)
+
+    -------- For develop use: --------
+    button program 1 - 8 minutes hours (ch 4, max 2000, min 1900)
+    button program 2 - 6 minutes (ch 4, max 2700, min 2600)
+    button program 3 - 4 minutes (ch 4, max 3350, min 3250)
+    button program 4 - 2 minutes (ch 5, max 2000, min 1900)
      */
+
+
     public class Program
     {
         public static void Main()
         {
-            TimerController t = new TimerController(new int[] { 4, 5 });
-            TimerProvider timerProvider = new TimerProvider();
-            TimerWorkLed ledProvider = new TimerWorkLed(25);
-            CustomGpio readyLed = new CustomGpio(26);
-            CustomGpio relayPin = new CustomGpio(16);
-            timerProvider.stopTimerEventhadler += (sender, args) =>
-            {
-                bool timerFlag = ((TimerEventArgs)args).isStop;
-                ledProvider.changeLedState(timerFlag);
-                relayPin.writePin(!timerFlag);
+            GpioController gpioController = new GpioController();
+            AdcController adcController = new AdcController();
 
-            };
-            t.onPressButoneventHandler += (sender, args) =>
+            AnalogValueController t = new AnalogValueController(new[] { 4, 5 }, adcController);
+            // HeatService heatService = new HeatService(TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(5));
+            HeatService heatService = new HeatService(TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(5));
+
+            CustomOutputGpio heatingLed = new CustomOutputGpio(gpioController, 26);
+            CustomOutputGpio jobyLed = new CustomOutputGpio(gpioController, 25);
+            CustomOutputGpio relayPin = new CustomOutputGpio(gpioController, 16);
+            LedInformationService ledInformationService = new LedInformationService(jobyLed, heatingLed);
+            
+
+            heatService.HeatingActionEventHandler += (sender, args) =>
             {
-                Button btn = ((PressButtonEventArgs)args).pressedButton;
-                Debug.WriteLine("Button is " + btn.type.ToString());
-                switch (btn.type)
+                HeatingStatus status = ((HeatingActionEventArgs)args).Status;
+                if (status == HeatingStatus.Heating)
                 {
-                    case ButtonType.min120:
-                        timerProvider.startCount(240);
-                        break;
-                    case ButtonType.min90:
-                        timerProvider.startCount(180);
-                        break;
-                    case ButtonType.min60:
-                        timerProvider.startCount(120);
-                        Debug.WriteLine("min60: start");
-                        break;
-                    case ButtonType.min30:
-                        timerProvider.startCount(60);
-                        break;
-                    default:
-                        timerProvider.ResetTimer();
-                        break;
+                    relayPin.WritePin(1);
+                    ledInformationService.TurnOnHeating();
+                }
+                else if (status == HeatingStatus.Cooling)
+                {
+                    relayPin.WritePin(0);
+                    ledInformationService.TurnOffHeating();
+                }
+                else
+                {
+                    relayPin.WritePin(0);
+                    ledInformationService.TurnOnDefault();
                 }
             };
-            
-            t.startScanButtons();
-            readyLed.writePin(PinValue.Low);
-            relayPin.writePin(PinValue.Low);
+            t.OnPressButonEventHandler += (sender, args) =>
+            {
+                ButtonType type = ((PressButtonEventArgs)args).BtnType;
+                TimeSpan timeSpan;
+                switch (type)
+                {
+                    case ButtonType.Hours8:
+                        timeSpan = TimeSpan.FromSeconds(480);
+                        break;
+                    case ButtonType.Hours6:
+                        timeSpan = TimeSpan.FromSeconds(360);
+                        break;
+                    case ButtonType.Hours4:
+                        timeSpan = TimeSpan.FromSeconds(240);
+                        break;
+                    case ButtonType.Hours2:
+                        timeSpan = TimeSpan.FromSeconds(120);
+                        break;
+                    default:
+                        timeSpan = TimeSpan.Zero;
+                        break;
+                }
+
+                heatService.ExecuteHeating(timeSpan);
+            };
+
+            t.SetTimer();
+            jobyLed.WritePin(PinValue.Low);
+            relayPin.WritePin(PinValue.Low);
             Thread.Sleep(Timeout.Infinite);
         }
     }
 
-    public interface ITimerWorkedState
+    class LedInformationService
     {
-        public void changeLedState(bool isStop);
+        private readonly JobLedController _jobLedController;
+        private readonly HeatingLedController _heatingLedController;
+
+        public LedInformationService(CustomOutputGpio jobyLed, CustomOutputGpio heatingLed)
+        {
+            _jobLedController = new JobLedController(jobyLed);
+            _heatingLedController = new HeatingLedController(heatingLed);
+        }
+
+        public void TurnOnDefault()
+        {
+            _jobLedController.Waiting();
+            _heatingLedController.TurnOff();
+        }
+
+        public void TurnOnHeating()
+        {
+            _jobLedController.Running();
+            _heatingLedController.TurnOn();
+        }
+
+        public void TurnOffHeating()
+        {
+            _heatingLedController.TurnOff();
+        }
     }
 
-    public class TimerWorkLed : CustomGpio, ITimerWorkedState
+    public abstract class LedController
     {
-        private Timer timer;
+        protected readonly Timer LedTimer;
+        protected readonly CustomOutputGpio Gpio;
 
-        public TimerWorkLed(int pin):base(pin)
+        protected LedController(CustomOutputGpio gpio)
         {
-            timer = new Timer(TimerCallback, null, 1000, 2000);
-        }
-        public void changeLedState(bool isStop)
-        {
-            if (isStop)
-            {
-                timer.Change(Timeout.Infinite, Timeout.Infinite);
-            }
-            else
-            {
-                timer.Change(0, 500);
-            }
+            Gpio = gpio;
+            LedTimer = new Timer(TimerCallback, null, -1, -1);
         }
 
-        private void TimerCallback(object state)
+        protected abstract void TimerCallback(object state);
+    }
+
+    public class HeatingLedController : LedController
+    {
+        public HeatingLedController(CustomOutputGpio gpio) : base(gpio)
         {
-            writePin(PinValue.Low);
+            Gpio.WritePin(PinValue.High);
+        }
+
+        public void TurnOn()
+        {
+            LedTimer.Change(0, 500);
+            Gpio.WritePin(PinValue.High);
+        }
+
+        public void TurnOff()
+        {
+            
+            LedTimer.Change(-1, -1);
+            Gpio.WritePin(PinValue.High);
+        }
+
+        protected override void TimerCallback(object state)
+        {
+            Gpio.WritePin(PinValue.Low);
             Thread.Sleep(125);
-            writePin(PinValue.High);
+            Gpio.WritePin(PinValue.High);
         }
     }
 
-    public class CustomRelay : CustomGpio, ITimerWorkedState
+    public class JobLedController : LedController
     {
-        public CustomRelay(int pin) : base(pin) { }
-
-        public void changeLedState(bool isStop)
+        public JobLedController(CustomOutputGpio gpio) : base(gpio)
         {
-            if (isStop)
+            Gpio.WritePin(PinValue.Low);
+        }
+
+        public void Waiting()
+        {
+            LedTimer.Change(-1, -1);
+            Gpio.WritePin(PinValue.Low);
+        }
+
+        public void Running()
+        {
+            LedTimer.Change(0, 500);
+        }
+
+        protected override void TimerCallback(object state)
+        {
+            Gpio.WritePin(PinValue.Low);
+            Thread.Sleep(125);
+            Gpio.WritePin(PinValue.High);
+        }
+    }
+
+    public class CustomOutputGpio
+    {
+        private readonly GpioPin _gpio;
+
+
+        public CustomOutputGpio(GpioController gpioController, int pin)
+        {
+            _gpio = gpioController.OpenPin(pin, PinMode.Output);
+            WritePin(PinValue.High);
+        }
+
+        public void WritePin(PinValue pinValue)
+        {
+            _gpio.Write(pinValue);
+        }
+    }
+
+    public class HeatService
+    {
+        private readonly Timer _heatingTimer;
+        private readonly Timer _coolingTimer;
+        private readonly Timer _jobTimer;
+        private readonly TimeSpan _heatingTs;
+        private readonly TimeSpan _coolingTs;
+
+        public EventHandler HeatingActionEventHandler;
+
+        public HeatService(TimeSpan heatingTs, TimeSpan coolingTs)
+        {
+            _coolingTs = coolingTs;
+            _heatingTs = heatingTs;
+            _heatingTimer = new Timer(_OnHeating, null, -1, -1);
+            _coolingTimer = new Timer(_OnCooling, null, -1, -1);
+            _jobTimer = new Timer(_OnStop, null, -1, -1);
+        }
+
+        public void ExecuteHeating(TimeSpan delay)
+        {
+            if (delay == TimeSpan.Zero)
             {
-                writePin(PinValue.Low);
+                _reset();
             }
             else
             {
-                writePin(PinValue.High);
+                _jobTimer.Change(delay, TimeSpan.FromMilliseconds(-1));
+                _heatingTimer.Change(_heatingTs, TimeSpan.FromMilliseconds(-1));
+                HeatingActionEventHandler?.Invoke(this, new HeatingActionEventArgs(HeatingStatus.Heating));
             }
         }
+
+        private void _OnHeating(object state)
+        {
+            _heatingTimer.Change(-1, -1);
+            _coolingTimer.Change(_coolingTs, TimeSpan.FromMilliseconds(-1));
+            HeatingActionEventHandler?.Invoke(this, new HeatingActionEventArgs(HeatingStatus.Cooling));
+        }
+
+        private void _OnCooling(object state)
+        {
+            _coolingTimer.Change(-1, -1);
+            _heatingTimer.Change(_heatingTs, TimeSpan.FromMilliseconds(-1));
+            HeatingActionEventHandler?.Invoke(this, new HeatingActionEventArgs(HeatingStatus.Heating));
+        }
+
+        private void _OnStop(object state)
+        {
+            _reset();
+        }
+
+
+        private void _reset()
+        {
+            
+            _coolingTimer.Change(-1, -1);
+            _heatingTimer.Change(-1, -1);
+            _jobTimer.Change(-1, -1);
+            HeatingActionEventHandler?.Invoke(this, new HeatingActionEventArgs(HeatingStatus.Stop));
+        }
+
+        public void Dispose()
+        {
+            _coolingTimer.Dispose();
+            _heatingTimer.Dispose();
+            _jobTimer.Dispose();
+        }
     }
 
-    public class CustomGpio
+    public class HeatingActionEventArgs : EventArgs
     {
-        private GpioPin runLed;
-        
+        public HeatingStatus Status { get; }
 
-        public CustomGpio(int pin)
+        public HeatingActionEventArgs(HeatingStatus status)
         {
-            runLed = new GpioController().OpenPin(pin, PinMode.Output);
-            writePin(PinValue.High);
-        }
-
-        public void writePin(PinValue pinValue)
-        {
-            runLed.Write(pinValue);
+            Status = status;
         }
     }
 
-    public class TimerProvider
+
+    public class PressButtonEventArgs : EventArgs
     {
-        private Timer timer;
-        public EventHandler stopTimerEventhadler;
+        public readonly ButtonType BtnType;
 
-        public TimerProvider()
+        public PressButtonEventArgs(ButtonType type)
         {
-            timer = new Timer(StopTimer, null, 0, 0);
-        }
-        public void startCount(int delay)
-        {
-            Debug.WriteLine("Start timer for " + delay.ToString() + " mills");
-            timer.Change(TimeSpan.FromMinutes(delay), TimeSpan.FromMilliseconds(-1));
-            stopTimerEventhadler?.Invoke(this, new TimerEventArgs(false));
-            Debug.WriteLine(DateTime.UtcNow.ToUnixTimeSeconds().ToString() + ": start");
-        }
-
-
-        public void StopTimer(object state)
-        {
-            Debug.WriteLine(DateTime.UtcNow.ToUnixTimeSeconds().ToString() + ": stop");
-            stopTimerEventhadler?.Invoke(this, new TimerEventArgs(true));
-        }
-
-        public void ResetTimer()
-        {
-            timer.Change(Timeout.Infinite, Timeout.Infinite);
-            stopTimerEventhadler?.Invoke(this, new TimerEventArgs(true));
+            BtnType = type;
         }
     }
 
-    public class PressButtonEventArgs : EventArgs {
-        public readonly Button pressedButton;
-
-        public PressButtonEventArgs(Button onPressedBtn)
-        {
-            this.pressedButton = onPressedBtn;
-        }
-    }
-
-    public class TimerEventArgs : EventArgs
+    public class AnalogValueController
     {
-        public readonly bool isStop;
+        private readonly AnalogButton[][] _buttonsSet;
+        private readonly AnalogReader[] _adcSets;
+        private Timer _timer;
+        public EventHandler OnPressButonEventHandler;
 
-        public TimerEventArgs(bool isStop)
+        public AnalogValueController(int[] channels, AdcController controller)
         {
-            this.isStop = isStop;
-        }
-    }
-
-    public class TimerController
-    {
-        Button[][] buttonsSet;
-        AnanlogButtonSet[] adcSets;
-
-        public EventHandler onPressButoneventHandler;
-        public TimerController(int[] chls)
-        {
-            adcSets = new AnanlogButtonSet[chls.Length];
-            buttonsSet = new Button[chls.Length][];
-
-            for (int i = 0; i < chls.Length; i++)
+            _adcSets = new AnalogReader[channels!.Length];
+            _buttonsSet = new AnalogButton[channels.Length][];
+            for (int i = 0; i < channels.Length; i++)
             {
-                AnanlogButtonSet set = new AnanlogButtonSet(chls[i]);
-                adcSets[i] = set;
+                AnalogReader set = new AnalogReader(controller, channels[i]);
+                _adcSets[i] = set;
                 switch (i)
                 {
                     case 0:
-                        buttonsSet[i] = InitFirstButtonSet(set);
+                        _buttonsSet[i] = InitFirstButtonSet();
                         break;
                     case 1:
-                        buttonsSet[i] = InitSecondButtonSet(set);
+                        _buttonsSet[i] = InitSecondButtonSet();
                         break;
                 }
             }
         }
 
-        public void startScanButtons()
+        public void SetTimer(int dueTime = 0, int period = 200)
         {
-            new Thread(() =>
-            {
-                while (true)
-                {
-                    Button btn = scan();
-                    if (btn != null && onPressButoneventHandler != null)
-                    {
-                        onPressButoneventHandler.Invoke(this, new PressButtonEventArgs(btn));
-                    }
-                    Thread.Sleep(250);
-                }
-            }).Start();
+            _timer = new Timer(ScanButtons, null, dueTime, period);
         }
 
-        private Button scan()
+        public void Dispose()
         {
-            for (int i = 0; i < adcSets.Length; i++)
+            _timer.Dispose();
+        }
+
+        private void ScanButtons(object state)
+        {
+            AnalogButton btn = GetPressedButton();
+            if (btn != null && OnPressButonEventHandler != null)
             {
-                int value = adcSets[i].readValue();
-                for (int j = 0; j < buttonsSet[i].Length; j++)
+                OnPressButonEventHandler.Invoke(this, new PressButtonEventArgs(btn.Type));
+            }
+        }
+
+        private AnalogButton GetPressedButton()
+        {
+            for (int i = 0; i < _adcSets.Length; i++)
+            {
+                int value = _adcSets[i].ReadValue();
+                for (int j = 0; j < _buttonsSet[i].Length; j++)
                 {
-                    Button btn = buttonsSet[i][j];
-                    if (btn.isNeedBtn(value))
+                    AnalogButton btn = _buttonsSet[i][j];
+                    if (btn.IsThisBtn(value))
                     {
-                        Console.WriteLine("The button " + btn.type.ToString() + " was pressed");
+                        Console.WriteLine("The button " + btn.Type.ToString() + " was pressed");
                         return btn;
                     }
                 }
             }
+
             return null;
         }
 
-        private Button[] InitFirstButtonSet(AnanlogButtonSet set)
+        private AnalogButton[] InitFirstButtonSet()
         {
-            Button btn120Minutes = new Button(ButtonType.min120, 1800, 2100);
-            Button btn90Minutes = new Button(ButtonType.min90, 2500, 2800);
-            Button btn60Minutes = new Button(ButtonType.min60, 3150, 3450);
-            return new Button[] { btn120Minutes, btn90Minutes, btn60Minutes, };
+            AnalogButton hours8Btn = new AnalogButton(ButtonType.Hours8, 1800, 2100);
+            AnalogButton hours6Btn = new AnalogButton(ButtonType.Hours6, 2500, 2800);
+            AnalogButton hours4Btn = new AnalogButton(ButtonType.Hours4, 3150, 3450);
+            return new[] { hours8Btn, hours6Btn, hours4Btn, };
         }
 
-        private Button[] InitSecondButtonSet(AnanlogButtonSet set)
+        private AnalogButton[] InitSecondButtonSet()
         {
-            Button btn30Minutes = new Button(ButtonType.min30, 1800, 2100);
-            Button reset = new Button(ButtonType.reset, 2500, 2800);
-            Button dev = new Button(ButtonType.dev, 3150, 3450);
-            return new Button[] { btn30Minutes, reset, dev, };
+            AnalogButton hours2Btn = new AnalogButton(ButtonType.Hours2, 1800, 2100);
+            AnalogButton resetBtn = new AnalogButton(ButtonType.Reset, 2500, 2800);
+            return new[] { hours2Btn, resetBtn };
         }
-
     }
 
-    
-    public class AnanlogButtonSet
+    public class AnalogReader
     {
-        private AdcController adc;
-        private AdcChannel cnl;
-        
-        public AnanlogButtonSet(int chlPin)
+        private readonly AdcChannel _cnl;
+
+        public AnalogReader(AdcController adc, int chlPin)
         {
-            adc = new AdcController();
-            cnl = adc.OpenChannel(chlPin);
+            _cnl = adc.OpenChannel(chlPin);
         }
 
-        public int readValue()
+        public int ReadValue()
         {
-            int v = cnl.ReadValue();
-            if(v > 100) Console.WriteLine(v.ToString());
+            int v = _cnl.ReadValue();
+            if (v > 100) Console.WriteLine(v.ToString());
             return v;
         }
-
     }
 
-    public class Button
+    public class AnalogButton
     {
-        private readonly int min, max;
-        public readonly ButtonType type;
+        private readonly int _min, _max;
+        public readonly ButtonType Type;
 
-        public Button(ButtonType type, int min, int max)
+        public AnalogButton(ButtonType type, int min, int max)
         {
-            this.type = type;
-            this.max = max;
-            this.min = min;
+            this.Type = type;
+            _max = max;
+            _min = min;
         }
 
-        public bool isNeedBtn(int value) => value > min && value < max;
-
+        public bool IsThisBtn(int value) => value > _min && value < _max;
     }
 
     public enum ButtonType
     {
-        min120,
-        min90,
-        min60,
-        min30,
-        reset,dev
+        Hours8,
+        Hours6,
+        Hours4,
+        Hours2,
+        Reset,
+    }
+
+    public enum JobStatus
+    {
+        Waiting,
+        Running,
+    }
+
+    public enum HeatingStatus
+    {
+        Heating,
+        Cooling,
+        Stop,
     }
 }
