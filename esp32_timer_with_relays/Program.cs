@@ -33,10 +33,10 @@ namespace esp32_timer_with_relays
     - RL is turned off - relay is turned off
 
     -------- For production use: --------
-    button program 1 - 8 hours (ch 4, max 2000, min 1900)
-    button program 2 - 6 hours (ch 4, max 2700, min 2600)
-    button program 3 - 4 hours (ch 4, max 3350, min 3250)
-    button program 4 - 2 hours (ch 5, max 2000, min 1900)
+    button program 1 - 2 hours (ch 4, max 2000, min 1900)
+    button program 2 - 4 hours (ch 4, max 2700, min 2600)
+    button program 3 - 6 hours (ch 4, max 3350, min 3250)
+    button program 4 - 8 hours (ch 5, max 2000, min 1900)
 
     -------- For develop use: --------
     button program 1 - 8 minutes hours (ch 4, max 2000, min 1900)
@@ -62,7 +62,7 @@ namespace esp32_timer_with_relays
             CustomOutputGpio relayPin = new CustomOutputGpio(gpioController, 16);
 
 
-            TimingService timingService = new TimingService(ITiming.BuildOn(DevelopStage.Production));
+            TimingService timingService = new TimingService(ITiming.BuildOn(DevelopStage.Profile));
             HeatService heatService = new HeatService(timingService.HeatingUs, timingService.CoolingUs);
             LedInformationService ledInformationService = new LedInformationService(jobyLed, heatingLed);
             ulong lastDelayValue = 0;
@@ -113,12 +113,16 @@ namespace esp32_timer_with_relays
                         throw new ArgumentOutOfRangeException();
                 }
 
+                long ticks = (long)(delay * 10);
+                TimeSpan timeSpan = TimeSpan.FromTicks(ticks);
+                Console.WriteLine("Selected job  time: " + timeSpan.ToString());
+                Console.WriteLine("Selected job  ticks: " + delay.ToString());
 
                 if (delay != lastDelayValue)
                 {
                     heatService.ExecuteHeating(delay);
                 }
-
+    
                 lastDelayValue = delay;
             };
             adcService.StartScan();
@@ -167,6 +171,8 @@ namespace esp32_timer_with_relays
                     return new DevTiming();
                 case DevelopStage.Production:
                     return new ProdTiming();
+                case DevelopStage.Profile:
+                    return new ProfileTiming();
                 default:
                     throw new Exception();
             }
@@ -184,20 +190,30 @@ namespace esp32_timer_with_relays
     {
         public TimeSpan HeatingTs => TimeSpan.FromSeconds(4);
         public TimeSpan CoolingTs => TimeSpan.FromSeconds(1);
-        public TimeSpan Program1Ts => TimeSpan.FromSeconds(30);
-        public TimeSpan Program2Ts => TimeSpan.FromSeconds(60);
-        public TimeSpan Program3Ts => TimeSpan.FromSeconds(90);
-        public TimeSpan Program4Ts => TimeSpan.FromSeconds(120);
+        public TimeSpan Program1Ts => TimeSpan.FromSeconds(120);
+        public TimeSpan Program2Ts => TimeSpan.FromSeconds(90);
+        public TimeSpan Program3Ts => TimeSpan.FromSeconds(60);
+        public TimeSpan Program4Ts => TimeSpan.FromSeconds(30);
     }
 
     public class ProdTiming : ITiming
     {
         public TimeSpan HeatingTs => TimeSpan.FromMinutes(4);
         public TimeSpan CoolingTs => TimeSpan.FromMinutes(1);
-        public TimeSpan Program1Ts => TimeSpan.FromHours(8);
-        public TimeSpan Program2Ts => TimeSpan.FromHours(6);
-        public TimeSpan Program3Ts => TimeSpan.FromHours(4);
-        public TimeSpan Program4Ts => TimeSpan.FromHours(2);
+        public TimeSpan Program1Ts => TimeSpan.FromHours(2);
+        public TimeSpan Program2Ts => TimeSpan.FromHours(4);
+        public TimeSpan Program3Ts => TimeSpan.FromHours(6);
+        public TimeSpan Program4Ts => TimeSpan.FromHours(8);
+    }
+    
+    public class ProfileTiming : ITiming
+    {
+        public TimeSpan HeatingTs => TimeSpan.FromMinutes(4);
+        public TimeSpan CoolingTs => TimeSpan.FromMinutes(1);
+        public TimeSpan Program1Ts => TimeSpan.FromMinutes(15);
+        public TimeSpan Program2Ts => TimeSpan.FromMinutes(30);
+        public TimeSpan Program3Ts => TimeSpan.FromMinutes(45);
+        public TimeSpan Program4Ts => TimeSpan.FromMinutes(65);
     }
 
     class LedInformationService
@@ -231,21 +247,21 @@ namespace esp32_timer_with_relays
 
     public abstract class LedController
     {
-        protected readonly HighResTimer LedTimer;
+        protected readonly Timer LedTimer;
         protected readonly CustomOutputGpio Gpio;
 
         protected LedController(CustomOutputGpio gpio)
         {
             Gpio = gpio;
-            LedTimer = new HighResTimer();
-            LedTimer.OnHighResTimerExpired += (_, _) =>
-            {
-                Gpio.WritePin(PinValue.Low);
-                Thread.Sleep(125);
-                Gpio.WritePin(PinValue.High);
-            };
+            LedTimer = new Timer(_OnTimerExpired, null, -1, -1);
+        }
+
+        private void _OnTimerExpired(object state)
+        {
+            Gpio.Toggle();
         }
     }
+
 
     public class HeatingLedController : LedController
     {
@@ -256,14 +272,12 @@ namespace esp32_timer_with_relays
 
         public void TurnOn()
         {
-            ulong us = Utils.ConvertFromTsToUs(TimeSpan.FromMilliseconds(500));
-            LedTimer.StartOnePeriodic(us);
+            LedTimer.Change(0, 250);
         }
 
         public void TurnOff()
         {
-            LedTimer.Stop();
-            Thread.Sleep(500);
+            LedTimer.Change(-1, -1);
             Gpio.WritePin(PinValue.High);
         }
     }
@@ -276,15 +290,13 @@ namespace esp32_timer_with_relays
 
         public void Waiting()
         {
-            LedTimer.Stop();
-            Thread.Sleep(500);
+            LedTimer.Change(-1, -1);
             Gpio.WritePin(PinValue.Low);
         }
 
         public void Running()
         {
-            ulong us = Utils.ConvertFromTsToUs(TimeSpan.FromMilliseconds(500));
-            LedTimer.StartOnePeriodic(us);
+            LedTimer.Change(0, 250);
         }
     }
 
@@ -302,6 +314,11 @@ namespace esp32_timer_with_relays
         {
             _gpio.Write(pinValue);
         }
+
+        public void Toggle()
+        {
+            _gpio.Toggle();
+        }
     }
 
     public class HeatService
@@ -311,10 +328,12 @@ namespace esp32_timer_with_relays
         private readonly HighResTimer _jobTimer;
         private readonly ulong _heatingUs;
         private readonly ulong _coolingUs;
+        
 
         private ulong _totalJobTicks;
         private ulong _currentJobTicks;
         private ulong _currentMaxTicks;
+        
         private static readonly ulong MaxTickQnt = Utils.ConvertFromTsToUs(TimeSpan.FromHours(1));
 
 
@@ -328,49 +347,50 @@ namespace esp32_timer_with_relays
             _coolingTimer = new HighResTimer();
             _jobTimer = new HighResTimer();
 
-            _heatingTimer.OnHighResTimerExpired += _OnHeating;
-            _coolingTimer.OnHighResTimerExpired += _OnCooling;
-            _jobTimer.OnHighResTimerExpired += _OnJobTicker;
+            _heatingTimer.OnHighResTimerExpired += _OnHeatingStop;
+            _coolingTimer.OnHighResTimerExpired += _OnCoolingStop;
+            _jobTimer.OnHighResTimerExpired += _OnJobTimerInvoke;
         }
 
         public void ExecuteHeating(ulong delay)
         {
             _totalJobTicks = delay;
-            if (delay > MaxTickQnt)
-            {
-                _currentMaxTicks = MaxTickQnt;
-            }
-            else
-            {
-                _currentMaxTicks = delay;
-            }
+            _currentJobTicks = 0;
+            _currentMaxTicks = delay >= MaxTickQnt ? MaxTickQnt : delay;
+
             if (delay == 0)
             {
-                _currentJobTicks = 0;
                 Reset();
             }
             else
             {
+                Console.WriteLine("Start heating");
                 _jobTimer.StartOnePeriodic(_currentMaxTicks);
                 _heatingTimer.StartOneShot(_heatingUs);
                 HeatingActionEventHandler?.Invoke(this, new HeatingActionEventArgs(HeatingStatus.Heating));
             }
         }
 
-        private void _OnHeating(HighResTimer sender, object e)
+        private void _OnHeatingStop(HighResTimer sender, object e)
         {
+            Console.WriteLine("Pause for cooling");
             _coolingTimer.StartOneShot(_coolingUs);
             HeatingActionEventHandler?.Invoke(this, new HeatingActionEventArgs(HeatingStatus.Cooling));
         }
 
-        private void _OnCooling(HighResTimer sender, object e)
+        private void _OnCoolingStop(HighResTimer sender, object e)
         {
+            Console.WriteLine("Continue heating");
             _heatingTimer.StartOneShot(_heatingUs);
             HeatingActionEventHandler?.Invoke(this, new HeatingActionEventArgs(HeatingStatus.Heating));
         }
 
-        private void _OnJobTicker(HighResTimer sender, object e)
+        private void _OnJobTimerInvoke(HighResTimer sender, object e)
         {
+            Console.WriteLine("Need stop heating or continue");
+            Console.WriteLine("currentJobTicks: " + _currentJobTicks);
+            Console.WriteLine("currentMaxTicks: " + _currentMaxTicks);
+            Console.WriteLine("totalJobTicks: " + _totalJobTicks);
             _currentJobTicks += _currentMaxTicks;
             if (_currentJobTicks >= _totalJobTicks)
             {
@@ -517,7 +537,7 @@ namespace esp32_timer_with_relays
 
         public AnalogButton(ButtonType type, int min, int max)
         {
-            this.Type = type;
+            Type = type;
             _max = max;
             _min = min;
         }
@@ -538,6 +558,7 @@ namespace esp32_timer_with_relays
     {
         Develop,
         Production,
+        Profile,
     }
 
     public enum HeatingStatus
