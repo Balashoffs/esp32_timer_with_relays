@@ -113,7 +113,7 @@ namespace esp32_timer_with_relays
                         throw new ArgumentOutOfRangeException();
                 }
 
-   
+
                 if (delay != lastDelayValue)
                 {
                     heatService.ExecuteHeating(delay);
@@ -132,11 +132,12 @@ namespace esp32_timer_with_relays
     {
         public ulong HeatingUs { get; }
         public ulong CoolingUs { get; }
-        public ulong Program1Us{ get; }
-        public ulong Program2Us{ get; }
-        public ulong Program3Us{ get; }
-        public ulong Program4Us{ get; }
+        public ulong Program1Us { get; }
+        public ulong Program2Us { get; }
+        public ulong Program3Us { get; }
+        public ulong Program4Us { get; }
     }
+
     public class TimingService : ITimingService
     {
         private readonly ITiming _timing;
@@ -271,7 +272,6 @@ namespace esp32_timer_with_relays
     {
         public JobLedController(CustomOutputGpio gpio) : base(gpio)
         {
-            
         }
 
         public void Waiting()
@@ -312,6 +312,11 @@ namespace esp32_timer_with_relays
         private readonly ulong _heatingUs;
         private readonly ulong _coolingUs;
 
+        private ulong _totalJobTicks;
+        private ulong _currentJobTicks;
+        private ulong _currentMaxTicks;
+        private static readonly ulong MaxTickQnt = Utils.ConvertFromTsToUs(TimeSpan.FromHours(1));
+
 
         public EventHandler HeatingActionEventHandler;
 
@@ -325,49 +330,60 @@ namespace esp32_timer_with_relays
 
             _heatingTimer.OnHighResTimerExpired += _OnHeating;
             _coolingTimer.OnHighResTimerExpired += _OnCooling;
-            _jobTimer.OnHighResTimerExpired += _OnStop;
+            _jobTimer.OnHighResTimerExpired += _OnJobTicker;
         }
 
         public void ExecuteHeating(ulong delay)
         {
+            _totalJobTicks = delay;
+            if (delay > MaxTickQnt)
+            {
+                _currentMaxTicks = MaxTickQnt;
+            }
+            else
+            {
+                _currentMaxTicks = delay;
+            }
             if (delay == 0)
             {
+                _currentJobTicks = 0;
                 Reset();
             }
             else
             {
-                _jobTimer.StartOnePeriodic(delay);
-                _heatingTimer.StartOnePeriodic(_heatingUs);
+                _jobTimer.StartOnePeriodic(_currentMaxTicks);
+                _heatingTimer.StartOneShot(_heatingUs);
                 HeatingActionEventHandler?.Invoke(this, new HeatingActionEventArgs(HeatingStatus.Heating));
             }
         }
 
         private void _OnHeating(HighResTimer sender, object e)
         {
-            _heatingTimer.Stop();
-            _coolingTimer.StartOnePeriodic(_coolingUs);
+            _coolingTimer.StartOneShot(_coolingUs);
             HeatingActionEventHandler?.Invoke(this, new HeatingActionEventArgs(HeatingStatus.Cooling));
         }
 
         private void _OnCooling(HighResTimer sender, object e)
         {
-            _coolingTimer.Stop();
-            _heatingTimer.StartOnePeriodic(_heatingUs);
+            _heatingTimer.StartOneShot(_heatingUs);
             HeatingActionEventHandler?.Invoke(this, new HeatingActionEventArgs(HeatingStatus.Heating));
         }
 
-        private void _OnStop(HighResTimer sender, object e)
+        private void _OnJobTicker(HighResTimer sender, object e)
         {
-            Reset();
+            _currentJobTicks += _currentMaxTicks;
+            if (_currentJobTicks >= _totalJobTicks)
+            {
+                Reset();
+            }
         }
 
 
-        public void Reset()
+        private void Reset()
         {
-            Console.WriteLine("On reset");
+            _jobTimer.Stop();
             _coolingTimer.Stop();
             _heatingTimer.Stop();
-            _jobTimer.Stop();
             HeatingActionEventHandler?.Invoke(this, new HeatingActionEventArgs(HeatingStatus.Stop));
         }
 
